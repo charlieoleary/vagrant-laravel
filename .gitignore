@@ -1,0 +1,4 @@
+.vagrant
+apps/*
+.DS_Store
+!apps/.gitkeep

@@ -1,0 +1,106 @@
+---
+- include_vars: non-commit.yml
+
+- name: add percona repositories
+  get_url: url=https://repo.percona.com/apt/percona-release_0.1-3.{{ ansible_distribution_release }}_all.deb dest=/tmp/ mode=0644
+
+- name: install percona repositories
+  apt: deb=/tmp/percona-release_0.1-3.{{ ansible_distribution_release }}_all.deb
+  register: PERCONA_REPO_ADDED
+
+- name: update cache if percona repo is added
+  when: PERCONA_REPO_ADDED|changed
+  apt: update_cache=yes
+
+- name: install percona mysql 5.7
+  apt: name={{ item }} state=installed cache_valid_time=86400
+  with_items:
+    - percona-server-server-5.7
+    - mysql-utilities
+    - python-mysqldb
+
+- name: install php7 and nginx dev
+  apt_repository: repo={{ item }} state=present update_cache=yes
+  with_items:
+    - ppa:ondrej/php
+    - ppa:nginx/development
+
+- name: install required php packages
+  apt: name={{ item }} state=present
+  with_items:
+    - nginx
+    - zip
+    - unzip
+    - php7.0-fpm
+    - php7.0-mcrypt
+    - php7.0-mysql
+    - php7.0-curl
+    - php7.0-zip
+    - php7.0-mbstring
+    - php7.0-xml
+  register: PACKAGES_INSTALLED
+
+- name: delete default nginx config
+  file: path=/etc/nginx/sites-enabled/default state=absent
+
+- name: copy nginx config
+  template: src=site.conf.j2 dest=/etc/nginx/sites-enabled/site.conf
+  register: NGINX_TEMPLATE_CHANGED
+
+- name: change www-data user to vagrant for php and nginx configurations
+  replace: dest={{ item }} regexp="www-data" replace="vagrant"
+  with_items:
+    - /etc/nginx/nginx.conf
+    - /etc/php/7.0/fpm/pool.d/www.conf
+  register: USERS_CHANGED
+
+- name: restart services
+  when: PACKAGES_INSTALLED|changed or NGINX_TEMPLATE_CHANGED|changed or USERS_CHANGED|changed
+  service: name={{ item }} state=restarted
+  with_items:
+    - php7.0-fpm
+    - nginx
+    - mysql
+
+- name: create mysql database
+  mysql_db: name={{ item }} state=present
+  with_items: "{{ SQL_DATABASES }}"
+
+- name: create mysql user
+  mysql_user: name={{ item.user }} password={{ item.password }} priv={{ item.privileges }}
+  with_items: "{{ SQL_USERS }}"
+
+- name: install composer
+  shell: curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin creates=/usr/local/bin/composer
+
+- name: rename composer.phar to composer
+  shell: mv /usr/local/bin/composer.phar /usr/local/bin/composer creates=/usr/local/bin/composer
+
+- name: make composer executable
+  file: path=/usr/local/bin/composer mode=a+x state=file
+
+- name: install laravel installer
+  shell: composer global require laravel/installer creates=/root/.composer/vendor/bin/laravel
+
+- name: add laravel installer to paths
+  lineinfile: dest=/root/.bashrc regexp="export PATH=\$PATH:/root/.composer/vendor/bin" line="export PATH=$PATH:/root/.composer/vendor/bin" insertafter="EOF" state=present
+
+- name: copy github oauth tokens
+  when: GITHUB_API_TOKEN is defined
+  template: src=auth.json.j2 dest=/root/.composer/auth.json
+
+- name: check if project exists
+  stat: path=/apps/{{ LARAVEL_PROJECT_NAME | default("app") }}
+  register: LARAVEL_PROJECT_EXISTS
+
+- name: perform composer create-project
+  when: LARAVEL_PROJECT_EXISTS.stat.exists == False
+  composer: command=create-project arguments="laravel/laravel {{ LARAVEL_PROJECT_NAME | default("app") }}" working_dir=/apps prefer_dist=yes
+
+- name: set permissions for laravel cache directories
+  when: LARAVEL_PROJECT_EXISTS.stat.exists == True
+  file: path=/apps/{{ LARAVEL_PROJECT_NAME | default("app") }}/{{ item }} mode=0777 recurse=yes
+  with_items:
+    - storage
+    - bootstrap/cache
+  ignore_errors: yes

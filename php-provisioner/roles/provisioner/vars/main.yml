@@ -1,0 +1,8 @@
+---
+SQL_DATABASES:
+  - app
+
+SQL_USERS:
+  - { "user": "app", "password": "password", "privileges": "app.*:ALL" }
+
+#LARAVEL_PROJECT_NAME: null
